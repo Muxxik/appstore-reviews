@@ -82,7 +82,7 @@ def fetch_reviews(app_url: str, country: str = "us", sleep_sec: float = 0.5, rat
         print("Отзывы не найдены.")
         return
     
-    filename = f"reviews_{app_id}_{country.lower()}_{rating_input}.txt"
+    filename = f"{app_id}_reviews_{country.lower()}_{rating_input}.txt"
     with open(filename, "w", encoding="utf-8") as f:
         for r in all_reviews:
             f.write(r)
