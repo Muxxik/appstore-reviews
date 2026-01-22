@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from appstore_reviews import download_reviews_to_md_file
 
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -25,6 +26,18 @@ class UserSession:
 
 sessions: dict[int, UserSession] = {}
 
+COUNTRY_KB = ReplyKeyboardMarkup(
+    [["us", "ru", "de", "fr"], ["default (us)"]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
+RATING_KB = ReplyKeyboardMarkup(
+    [["all", "5", "4"], ["3", "2", "1"]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
 
 def _looks_like_appstore_url(text: str) -> bool:
     # Достаточно мягкая проверка: домен + /app/ + id123...
@@ -34,7 +47,7 @@ def _looks_like_appstore_url(text: str) -> bool:
 
 def _normalize_country(text: str) -> str | None:
     c = (text or "").strip().lower()
-    if not c:
+    if not c or c in {"default", "default (us)", "us default", "-"}:
         return "us"
     if re.fullmatch(r"[a-z]{2}", c):
         return c
@@ -43,7 +56,7 @@ def _normalize_country(text: str) -> str | None:
 
 def _normalize_rating(text: str) -> str | None:
     r = (text or "").strip().lower()
-    if not r or r == "all":
+    if not r or r in {"all", "-"}:
         return "all"
     if r in {"1", "2", "3", "4", "5"}:
         return r
@@ -136,9 +149,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         s.step = "country"
         await update.message.reply_text(
             "Шаг 2/3: из какой страны нужны отзывы?\n"
-            "Введи двухбуквенный код (например: us, ru, de, fr).\n"
-            "Если отправишь пустое сообщение — будет us."
+            "Нажми кнопку или введи двухбуквенный код (us, ru, de, fr…).\n"
+            "Для значения по умолчанию — нажми кнопку default (us).",
+            reply_markup=COUNTRY_KB,
         )
+
         return
 
     # Шаг 2: Country
@@ -155,8 +170,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         s.step = "rating"
         await update.message.reply_text(
             "Шаг 3/3: какая оценка отзывов нужна?\n"
-            "Введи 1, 2, 3, 4 или 5.\n"
-            "Или напиши all (или оставь пусто), чтобы взять все оценки."
+            "Нажми кнопку 1–5 или all (все оценки).",
+            reply_markup=RATING_KB,
         )
         return
 
@@ -174,7 +189,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         s.step = "downloading"
 
         await update.message.reply_text(
-            "Принято ✅ Начинаю скачивать отзывы и готовить .md файл…"
+            "Принято ✅ Начинаю скачивать отзывы и готовить .md файл…",
+            reply_markup=ReplyKeyboardRemove(),
         )
 
         chat_id = update.effective_chat.id
@@ -185,8 +201,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
     # Если уже done
-    await update.message.reply_text("Напиши /start чтобы начать заново или /cancel чтобы сбросить.")
-
+    await update.message.reply_text(
+        "Ок, сбросил. Напиши /start чтобы начать заново.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
 def main() -> None:
