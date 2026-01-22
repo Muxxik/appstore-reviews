@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 *_reviews_*.md
 *_feedback.md
+.env
