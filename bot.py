@@ -1,5 +1,5 @@
-import os
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from appstore_reviews import download_reviews_to_md_file
@@ -17,7 +17,7 @@ if not BOT_TOKEN:
 
 @dataclass
 class UserSession:
-    step: str = "url"          # url -> country -> rating -> done
+    step: str = "url"          # url -> country -> rating -> downloading
     url: str = ""
     country: str = ""
     rating_input: str = "all"  # "1".."5" или "all"
@@ -66,6 +66,49 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sessions.pop(user_id, None)
     await update.message.reply_text("Ок, сбросил. Напиши /start чтобы начать заново.")
 
+async def _download_and_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, url: str, country: str, rating_input: str) -> None:
+    loop = asyncio.get_running_loop()
+    filename = None
+
+    try:
+        filename = await loop.run_in_executor(
+            None,
+            lambda: download_reviews_to_md_file(
+                app_url=url,
+                country=country,
+                rating_input=rating_input,
+            ),
+        )
+
+        with open(filename, "rb") as f:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=f,
+                filename=os.path.basename(filename),
+                caption=(
+                    "Готово ✅\n"
+                    f"Country: {country}\n"
+                    f"Rating: {rating_input}"
+                ),
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Упс, не получилось скачать отзывы 😕\nОшибка: {type(e).__name__}: {e}",
+        )
+    finally:
+        # очищаем сессию
+        sessions.pop(user_id, None)
+
+        # удаляем файл, чтобы не копился мусор
+        if filename and os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except OSError:
+                pass
+
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -76,6 +119,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     s = sessions[user_id]
+    if s.step == "downloading":
+        await update.message.reply_text("Я уже скачиваю отзывы 👀 Подожди немного, скоро пришлю файл.")
+        return
 
     # Шаг 1: URL
     if s.step == "url":
@@ -125,59 +171,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         s.rating_input = rating
-        s.step = "done"
+        s.step = "downloading"
 
         await update.message.reply_text(
             "Принято ✅ Начинаю скачивать отзывы и готовить .md файл…"
         )
 
-        # Важно: скачивание может занять время, поэтому выполняем в фоне (в отдельном потоке)
-        loop = asyncio.get_running_loop()
-        filename = None
-
-        try:
-            filename = await loop.run_in_executor(
-                None,
-                lambda: download_reviews_to_md_file(
-                    app_url=s.url,
-                    country=s.country,
-                    rating_input=s.rating_input,
-                ),
-            )
-
-            # Отправляем файл в Telegram
-            with open(filename, "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=os.path.basename(filename),
-                    caption=(
-                        "Готово ✅\n"
-                        f"Country: {s.country}\n"
-                        f"Rating: {s.rating_input}"
-                    ),
-                )
-
-        except Exception as e:
-            await update.message.reply_text(
-                "Упс, не получилось скачать отзывы 😕\n"
-                f"Ошибка: {type(e).__name__}: {e}"
-            )
-        finally:
-            # Убираем состояние пользователя
-            sessions.pop(user_id, None)
-
-            # Удаляем файл после отправки/ошибки (чтобы не копились)
-            if filename and os.path.exists(filename):
-                try:
-                    os.remove(filename)
-                except OSError:
-                    pass
+        chat_id = update.effective_chat.id
+        # запускаем в фоне и сразу возвращаем управление, чтобы бот отвечал на новые сообщения
+        asyncio.create_task(_download_and_send(context, chat_id, user_id, s.url, s.country, s.rating_input))
 
         return
 
 
     # Если уже done
-    await update.message.reply_text("Параметры уже собраны. Напиши /start чтобы начать заново или /cancel чтобы сбросить.")
+    await update.message.reply_text("Напиши /start чтобы начать заново или /cancel чтобы сбросить.")
+
 
 
 def main() -> None:
