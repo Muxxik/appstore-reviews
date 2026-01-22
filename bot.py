@@ -1,4 +1,7 @@
 import os
+import re
+from dataclasses import dataclass
+
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -9,37 +12,137 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Не найден BOT_TOKEN. Создай .env и добавь BOT_TOKEN=...")
 
-# Пока просто храним состояние "ждём URL" на пользователя
-waiting_for_url: set[int] = set()
+
+@dataclass
+class UserSession:
+    step: str = "url"          # url -> country -> rating -> done
+    url: str = ""
+    country: str = ""
+    rating_input: str = "all"  # "1".."5" или "all"
+
+
+sessions: dict[int, UserSession] = {}
+
+
+def _looks_like_appstore_url(text: str) -> bool:
+    # Достаточно мягкая проверка: домен + /app/ + id123...
+    t = (text or "").strip()
+    return bool(re.search(r"apps\.apple\.com/.+/app/.+id\d+", t))
+
+
+def _normalize_country(text: str) -> str | None:
+    c = (text or "").strip().lower()
+    if not c:
+        return "us"
+    if re.fullmatch(r"[a-z]{2}", c):
+        return c
+    return None
+
+
+def _normalize_rating(text: str) -> str | None:
+    r = (text or "").strip().lower()
+    if not r or r == "all":
+        return "all"
+    if r in {"1", "2", "3", "4", "5"}:
+        return r
+    return None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    waiting_for_url.add(update.effective_user.id)
+    user_id = update.effective_user.id
+    sessions[user_id] = UserSession(step="url")
     await update.message.reply_text(
-        "Привет! Пришли мне URL приложения из App Store, и я начну с ним работать.\n"
-        "Пример: https://apps.apple.com/us/app/.../id123456789"
+        "Привет! Давай соберём параметры.\n\n"
+        "Шаг 1/3: пришли URL приложения из App Store.\n"
+        "Пример: https://apps.apple.com/us/app/.../id123456789\n\n"
+        "Можно в любой момент написать /cancel чтобы сбросить."
     )
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    sessions.pop(user_id, None)
+    await update.message.reply_text("Ок, сбросил. Напиши /start чтобы начать заново.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
 
-    if user_id in waiting_for_url:
-        waiting_for_url.discard(user_id)
+    if user_id not in sessions:
+        await update.message.reply_text("Напиши /start чтобы начать.")
+        return
+
+    s = sessions[user_id]
+
+    # Шаг 1: URL
+    if s.step == "url":
+        if not _looks_like_appstore_url(text):
+            await update.message.reply_text(
+                "Похоже, это не URL App Store. Пришли ссылку вида:\n"
+                "https://apps.apple.com/us/app/.../id123456789"
+            )
+            return
+
+        s.url = text
+        s.step = "country"
         await update.message.reply_text(
-            f"Принял URL:\n{text}\n\n"
-            "Следующим шагом я научусь спрашивать страну и рейтинг, а потом — скачивать отзывы."
+            "Шаг 2/3: из какой страны нужны отзывы?\n"
+            "Введи двухбуквенный код (например: us, ru, de, fr).\n"
+            "Если отправишь пустое сообщение — будет us."
         )
         return
 
-    await update.message.reply_text("Напиши /start, чтобы начать.")
+    # Шаг 2: Country
+    if s.step == "country":
+        country = _normalize_country(text)
+        if country is None:
+            await update.message.reply_text(
+                "Страна должна быть двухбуквенным кодом (например: us, ru, de, fr).\n"
+                "Попробуй ещё раз."
+            )
+            return
+
+        s.country = country
+        s.step = "rating"
+        await update.message.reply_text(
+            "Шаг 3/3: какая оценка отзывов нужна?\n"
+            "Введи 1, 2, 3, 4 или 5.\n"
+            "Или напиши all (или оставь пусто), чтобы взять все оценки."
+        )
+        return
+
+    # Шаг 3: Rating
+    if s.step == "rating":
+        rating = _normalize_rating(text)
+        if rating is None:
+            await update.message.reply_text(
+                "Оценка должна быть 1..5 или all.\n"
+                "Попробуй ещё раз."
+            )
+            return
+
+        s.rating_input = rating
+        s.step = "done"
+
+        await update.message.reply_text(
+            "Готово, параметры собраны ✅\n\n"
+            f"URL: {s.url}\n"
+            f"Country: {s.country}\n"
+            f"Rating: {s.rating_input}\n\n"
+            "Следующим шагом подключим скачивание отзывов и отправку .md файла."
+        )
+        return
+
+    # Если уже done
+    await update.message.reply_text("Параметры уже собраны. Напиши /start чтобы начать заново или /cancel чтобы сбросить.")
 
 
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.run_polling()
