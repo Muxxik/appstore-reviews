@@ -1,6 +1,8 @@
 import os
+import asyncio
 import re
 from dataclasses import dataclass
+from appstore_reviews import download_reviews_to_md_file
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -126,13 +128,53 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         s.step = "done"
 
         await update.message.reply_text(
-            "Готово, параметры собраны ✅\n\n"
-            f"URL: {s.url}\n"
-            f"Country: {s.country}\n"
-            f"Rating: {s.rating_input}\n\n"
-            "Следующим шагом подключим скачивание отзывов и отправку .md файла."
+            "Принято ✅ Начинаю скачивать отзывы и готовить .md файл…"
         )
+
+        # Важно: скачивание может занять время, поэтому выполняем в фоне (в отдельном потоке)
+        loop = asyncio.get_running_loop()
+        filename = None
+
+        try:
+            filename = await loop.run_in_executor(
+                None,
+                lambda: download_reviews_to_md_file(
+                    app_url=s.url,
+                    country=s.country,
+                    rating_input=s.rating_input,
+                ),
+            )
+
+            # Отправляем файл в Telegram
+            with open(filename, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=os.path.basename(filename),
+                    caption=(
+                        "Готово ✅\n"
+                        f"Country: {s.country}\n"
+                        f"Rating: {s.rating_input}"
+                    ),
+                )
+
+        except Exception as e:
+            await update.message.reply_text(
+                "Упс, не получилось скачать отзывы 😕\n"
+                f"Ошибка: {type(e).__name__}: {e}"
+            )
+        finally:
+            # Убираем состояние пользователя
+            sessions.pop(user_id, None)
+
+            # Удаляем файл после отправки/ошибки (чтобы не копились)
+            if filename and os.path.exists(filename):
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+
         return
+
 
     # Если уже done
     await update.message.reply_text("Параметры уже собраны. Напиши /start чтобы начать заново или /cancel чтобы сбросить.")
