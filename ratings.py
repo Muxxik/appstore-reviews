@@ -17,12 +17,12 @@ def main() -> None:
         "Если оставить пустым — возьмём все (будет 'all').\n> "
     ).strip()
 
-    filename = download_reviews_to_md_file(
+    filename, reviews_count = download_reviews_to_md_file(
         app_url=app_url,
         country=country,
         rating_input=rating_input,
     )
-    print(f"Готово! Файл: {filename}")
+    print(f"Готово! Файл: {filename} (отзывов: {reviews_count})")
 
 
 if __name__ == "__main__":

@@ -121,4 +121,5 @@ def download_reviews_to_md_file(
         else:
             f.write("# Отзывы не найдены\n")
 
-    return filename
+    reviews_count = len(parts)
+    return filename, reviews_count

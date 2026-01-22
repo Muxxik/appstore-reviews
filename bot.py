@@ -1,6 +1,9 @@
 import asyncio
 import os
 import re
+import logging
+import time
+
 from dataclasses import dataclass
 from appstore_reviews import download_reviews_to_md_file
 
@@ -14,6 +17,17 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Не найден BOT_TOKEN. Создай .env и добавь BOT_TOKEN=...")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("appstore-bot")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+
+
 
 
 @dataclass
@@ -82,9 +96,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _download_and_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, url: str, country: str, rating_input: str) -> None:
     loop = asyncio.get_running_loop()
     filename = None
+    
+    started = time.monotonic()
+    logger.info(
+        "download_start user_id=%s chat_id=%s country=%s rating=%s url=%s",
+        user_id, chat_id, country, rating_input, url
+    )
+
 
     try:
-        filename = await loop.run_in_executor(
+        filename, reviews_count = await loop.run_in_executor(
             None,
             lambda: download_reviews_to_md_file(
                 app_url=url,
@@ -101,15 +122,25 @@ async def _download_and_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, u
                 caption=(
                     "Готово ✅\n"
                     f"Country: {country}\n"
-                    f"Rating: {rating_input}"
+                    f"Rating: {rating_input}\n"
+                    f"Reviews: {reviews_count}"
                 ),
             )
-
+        elapsed = time.monotonic() - started
+        logger.info(
+            "download_done user_id=%s reviews=%s elapsed_sec=%.2f file=%s",
+            user_id, reviews_count, elapsed, os.path.basename(filename)
+        )
     except Exception as e:
+        logger.exception(
+            "download_error user_id=%s country=%s rating=%s error=%s",
+            user_id, country, rating_input, type(e).__name__
+        )
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Упс, не получилось скачать отзывы 😕\nОшибка: {type(e).__name__}: {e}",
+            text="Упс, не получилось скачать отзывы 😕 Попробуй другую страну или повтори позже.",
         )
+
     finally:
         # очищаем сессию
         sessions.pop(user_id, None)
