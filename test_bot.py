@@ -14,6 +14,7 @@ with patch.dict(os.environ, {"BOT_TOKEN": "test-token"}):
 
 import appstore_reviews
 import googleplay_reviews
+from review_archive import ArchiveResult
 
 
 def update_for(text="", user_id=1):
@@ -52,17 +53,26 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         await bot.start(update_for(), self.context)
         await self.say("https://play.google.com/store/apps/details?hl=en&id=com.ululab.numbers&gl=us")
         self.assertEqual(bot.sessions[1].store, "googleplay")
+        self.assertEqual(bot.sessions[1].step, "mode")
+        await self.say(bot.CUSTOMIZE)
+        await self.say(bot.CHANGE_COUNTRY)
         await self.say("Mexico")
         self.assertEqual(bot.sessions[1].step, "country")
         await self.say("mx")
+        self.assertEqual(bot.sessions[1].step, "settings")
+        await self.say(bot.CHANGE_LANGUAGE)
         self.assertEqual(bot.sessions[1].step, "language")
         await self.say("Spanish")
         self.assertEqual(bot.sessions[1].step, "language")
         await self.say("es")
+        await self.say(bot.CHANGE_RATING)
         await self.say("6")
         self.assertEqual(bot.sessions[1].step, "rating")
+        await self.say("1")
+        self.assertEqual(bot.sessions[1].step, "settings")
+        self.context.application.create_task.assert_not_called()
         with patch.object(bot, "_download_and_send", new_callable=AsyncMock) as download:
-            await self.say("1")
+            await self.say(bot.DOWNLOAD_SELECTED)
             await asyncio.gather(*self.tasks)
             download.assert_awaited_once()
             session = download.call_args.args[3]
@@ -73,13 +83,46 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_appstore_flow_skips_language(self):
         await bot.start(update_for(), self.context)
         await self.say("https://apps.apple.com/us/app/example/id123456789")
-        await self.say("default (us)")
+        await self.say(bot.CUSTOMIZE)
+        await self.say(bot.CHANGE_RATING)
         self.assertEqual(bot.sessions[1].step, "rating")
+        await self.say("all")
         with patch.object(bot, "_download_and_send", new_callable=AsyncMock) as download:
-            await self.say("all")
+            await self.say(bot.DOWNLOAD_SELECTED)
             await asyncio.gather(*self.tasks)
             session = download.call_args.args[3]
-            self.assertEqual((session.store, session.country, session.rating_input), ("appstore", "us", "all"))
+            self.assertEqual((session.store, session.country, session.rating_input), ("appstore", "all", "all"))
+
+    async def test_quick_download_skips_all_filter_questions(self):
+        for url, store in [
+            ("https://play.google.com/store/apps/details?id=com.example", "googleplay"),
+            ("https://apps.apple.com/us/app/example/id123", "appstore"),
+        ]:
+            with self.subTest(store=store):
+                bot.sessions.clear()
+                await bot.start(update_for(), self.context)
+                await self.say(url)
+                self.assertEqual(bot.sessions[1].step, "mode")
+                with patch.object(bot, "_download_and_send", new_callable=AsyncMock) as download:
+                    await self.say(bot.DOWNLOAD_ALL)
+                    await asyncio.gather(*self.tasks)
+                    download.assert_awaited_once()
+                    session = download.call_args.args[3]
+                    self.assertEqual((session.store, session.rating_input), (store, "all"))
+                    self.assertEqual((session.country, session.lang), ("all", "all"))
+
+    async def test_back_keeps_filters_and_rating_can_be_changed_independently(self):
+        await bot.start(update_for(), self.context)
+        await self.say("https://play.google.com/store/apps/details?id=com.example")
+        await self.say(bot.CUSTOMIZE)
+        await self.say(bot.CHANGE_RATING)
+        await self.say("2")
+        await self.say(bot.CHANGE_COUNTRY)
+        await self.say(bot.BACK)
+        self.assertEqual(bot.sessions[1].rating_input, "2")
+        self.assertEqual((bot.sessions[1].country, bot.sessions[1].lang), ("all", "all"))
+        self.assertEqual(bot.sessions[1].step, "settings")
+        self.context.application.create_task.assert_not_called()
 
     async def test_cancel_and_start_reset_dialog(self):
         await bot.start(update_for(), self.context)
@@ -96,26 +139,23 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
                 bot.sessions[1] = session
                 paths = []
 
-                def download(**kwargs):
+                def download(*args, **kwargs):
                     path = Path(kwargs["output_dir"], "reviews.md")
                     path.write_text("review text", encoding="utf-8")
                     paths.append(path)
-                    return str(path), 1
+                    return ArchiveResult([path], 1, 1, 1, 0, False)
 
                 async def send(**kwargs):
                     self.assertEqual(kwargs["document"].read(), b"review text")
                     self.assertEqual(kwargs["filename"], "reviews.md")
-                    self.assertIn("Отзывов: 1", kwargs["caption"])
-                    self.assertEqual("Язык запроса: fr" in kwargs["caption"], store == "googleplay")
+                    self.assertIn("Отзывов без повторов: 1", kwargs["caption"])
+                    self.assertEqual("Языки: fr" in kwargs["caption"], store == "googleplay")
 
                 self.context.bot.send_document.side_effect = send
-                with patch.object(bot, "download_reviews_to_md_file", side_effect=download) as apple, patch.object(bot, "download_googleplay", side_effect=download) as google:
+                with patch.object(bot, "download_archive", side_effect=download) as exporter:
                     await bot._download_and_send(self.context, 1, 1, session)
-                    selected, other = (google, apple) if store == "googleplay" else (apple, google)
-                    selected.assert_called_once()
-                    other.assert_not_called()
-                    if store == "googleplay":
-                        self.assertEqual(selected.call_args.kwargs["lang"], "fr")
+                    exporter.assert_called_once()
+                    self.assertEqual(exporter.call_args.args[1:4], (store, "fr", "fr"))
                 self.assertFalse(paths[0].parent.exists())
                 self.assertNotIn(1, bot.sessions)
 
@@ -125,13 +165,13 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         bot.sessions[1] = new
         folders = []
 
-        def fail(**kwargs):
+        def fail(*args, **kwargs):
             path = Path(kwargs["output_dir"])
             (path / "partial.md").write_text("partial")
             folders.append(path)
             raise RuntimeError("network error")
 
-        with patch.object(bot, "download_googleplay", side_effect=fail), self.assertLogs(bot.logger, level="ERROR"):
+        with patch.object(bot, "download_archive", side_effect=fail), self.assertLogs(bot.logger, level="ERROR"):
             await bot._download_and_send(self.context, 1, 1, old)
         self.assertIs(bot.sessions[1], new)
         self.assertFalse(folders[0].exists())
@@ -142,12 +182,12 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         barrier = threading.Barrier(2, timeout=5)
         paths = []
 
-        def download(**kwargs):
+        def download(*args, **kwargs):
             path = Path(kwargs["output_dir"], "same.md")
             path.write_text("same review")
             paths.append(path)
             barrier.wait()
-            return str(path), 1
+            return ArchiveResult([path], 1, 1, 1, 0, False)
 
         async def send(**kwargs):
             self.assertEqual(kwargs["document"].read(), b"same review")
@@ -155,11 +195,23 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_document.side_effect = send
         sessions = [bot.UserSession(step="downloading", store="googleplay") for _ in range(2)]
         bot.sessions.update(enumerate(sessions, 1))
-        with patch.object(bot, "download_googleplay", side_effect=download):
+        with patch.object(bot, "download_archive", side_effect=download):
             await asyncio.gather(*(bot._download_and_send(self.context, i, i, s) for i, s in enumerate(sessions, 1)))
         self.assertEqual(len(set(paths)), 2)
         self.assertEqual(self.context.bot.send_document.await_count, 2)
         self.assertTrue(all(not path.parent.exists() for path in paths))
+
+    async def test_stop_and_cancel_preserve_job_until_partial_file_is_sent(self):
+        session = bot.UserSession(step="downloading", progress={"completed": 3, "total": 10, "reviews": 4})
+        bot.sessions[1] = session
+        update = update_for()
+        await bot.status(update, self.context)
+        self.assertIn("3/10", update.message.reply_text.call_args.args[0])
+        await bot.start(update, self.context)
+        self.assertIs(bot.sessions[1], session)
+        await bot.cancel(update, self.context)
+        self.assertTrue(session.stop.is_set())
+        self.assertIs(bot.sessions[1], session)
 
 
 class InputAndExportTests(unittest.TestCase):

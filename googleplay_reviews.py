@@ -33,7 +33,7 @@ def normalize_options(country: str, lang: str, rating_input: str) -> tuple[str, 
     rating = (rating_input or "all").strip().lower()
     if not re.fullmatch(r"[a-z]{2}", country):
         raise ValueError("Код страны должен состоять из двух букв: us, ru, de…")
-    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2,4})?", lang):
+    if not re.fullmatch(r"[a-z]{2,3}(?:-(?:[a-z]{2,4}|[0-9]{3}))?", lang):
         raise ValueError("Укажи код языка: en, ru, de…")
     if rating not in {"all", "1", "2", "3", "4", "5"}:
         raise ValueError("Оценка должна быть 1..5 или all")

@@ -84,7 +84,7 @@ def download_reviews_to_md_file(
     while True:
         rss_url = (
             f"https://itunes.apple.com/{country_norm}/rss/customerreviews/"
-            f"page={page}/id={app_id}/sortBy=mostRecent/json"
+            f"page={page}/id={app_id}/sortby=mostrecent/json"
         )
 
         resp = requests.get(rss_url, timeout=timeout_sec)

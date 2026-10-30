@@ -36,7 +36,7 @@ def fetch_reviews(app_id: str, country: str, sleep_sec: float = 0.4, timeout_sec
     for page in range(1, MAX_PAGES + 1):
         url = (
             f"https://itunes.apple.com/{country}/rss/customerreviews/"
-            f"page={page}/id={app_id}/sortBy=mostRecent/json"
+            f"page={page}/id={app_id}/sortby=mostrecent/json"
         )
         for attempt in range(3):
             resp = requests.get(url, timeout=timeout_sec)
