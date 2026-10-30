@@ -1,4 +1,4 @@
-"""Загрузка публичных отзывов Google Play для консольных скриптов."""
+"""Загрузка публичных отзывов Google Play для CLI и Telegram-бота."""
 
 import re
 import ssl
@@ -101,13 +101,14 @@ def fetch_reviews(
 def download_reviews_to_md_file(
     app_url: str, country: str, rating_input: str,
     lang: str = "en", max_reviews: int = 0,
+    output_dir: str | Path = ".",
 ) -> tuple[str, int]:
     app_id = extract_app_id(app_url)
     country, lang, rating = normalize_options(country, lang, rating_input)
     # Проверяем существование приложения: неверный ID не должен выглядеть как пустой список отзывов.
     info = fetch_rating(app_id, country, lang)
     rows = fetch_reviews(app_id, country, lang, rating, max_reviews)
-    filename = f"googleplay_{app_id}_reviews_{country}_{lang}_{rating}.md"
+    filename = str(Path(output_dir) / f"googleplay_{app_id}_reviews_{country}_{lang}_{rating}.md")
     parts = [f"# {info['name']} — Google Play\n\nСтрана запроса: {country}. Язык: {lang}. Оценка: {rating}.\n\n"]
     for row in rows:
         parts.append(

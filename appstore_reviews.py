@@ -1,5 +1,6 @@
 import re
 import time
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -55,7 +56,8 @@ def download_reviews_to_md_file(
     rating_input: str,
     sleep_sec: float = 0.5,
     timeout_sec: int = 15,
-) -> str:
+    output_dir: str | Path = ".",
+) -> tuple[str, int]:
     """
     Скачивает отзывы (из публичного RSS-API Apple) и сохраняет в .md файл.
 
@@ -66,7 +68,7 @@ def download_reviews_to_md_file(
     - "1".."5" -> фильтруем по оценке
     - пусто или "all" -> берём все оценки
 
-    Возвращает: путь к созданному файлу (в текущей папке).
+    Возвращает путь к файлу в output_dir и число отзывов.
     """
     app_id = extract_app_id(app_url)
     country_norm = _normalize_country(country)
@@ -114,7 +116,7 @@ def download_reviews_to_md_file(
         page += 1
         time.sleep(sleep_sec)
 
-    filename = f"{app_id}_reviews_{country_norm.lower()}_{rating_norm}.md"
+    filename = str(Path(output_dir) / f"{app_id}_reviews_{country_norm.lower()}_{rating_norm}.md")
     with open(filename, "w", encoding="utf-8") as f:
         if parts:
             f.write("".join(parts))
